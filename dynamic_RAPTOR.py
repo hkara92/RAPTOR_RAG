@@ -68,3 +68,37 @@ class TextClusterSummarizer:
         num_tokens = len(encoding.encode(string))
         return num_tokens
 
+    def cluster_embeddings(self, embeddings, threshold, random_state=0):
+        # Group embeddings into clusters using Gaussian Mixture
+        print("Clustering embeddings...")
+        n_clusters = self.get_optimal_clusters(embeddings)
+        gm = GaussianMixture(n_components=n_clusters, random_state=random_state).fit(
+            embeddings
+        )
+        probs = gm.predict_proba(embeddings)
+        # assign points to clusters if probability > threshold
+        return [np.where(prob > threshold)[0] for prob in probs], n_clusters
+
+    def get_optimal_clusters(self, embeddings, max_clusters=50, random_state=1234):
+        # Find best number of clusters by minimizing BIC
+        print("Calculating optimal number of clusters...")
+        max_clusters = min(max_clusters, len(embeddings))
+        bics = [
+            GaussianMixture(n_components=n, random_state=random_state)
+            .fit(embeddings)
+            .bic(embeddings)
+            for n in range(1, max_clusters)
+        ]
+        optimal = np.argmin(bics) + 1
+        print(f"Optimal number of clusters: {optimal}")
+        return optimal
+
+    def format_cluster_texts(self, df):
+        # Combine texts in each cluster into one long string
+        print("Formatting cluster texts...")
+        clustered_texts = {}
+        for cluster in df["Cluster"].unique():
+            cluster_texts = df[df["Cluster"] == cluster]["Text"].tolist()
+            # join texts with a separator
+            clustered_texts[cluster] = " --- ".join(cluster_texts)
+        return clustered_texts
