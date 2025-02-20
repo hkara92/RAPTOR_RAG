@@ -102,3 +102,100 @@ class TextClusterSummarizer:
             # join texts with a separator
             clustered_texts[cluster] = " --- ".join(cluster_texts)
         return clustered_texts
+
+    def generate_summaries(self, texts):
+        # Use chat model to make a summary for each cluster text
+        print("Generating summaries...")
+        template = """You are an assistant to create a detailed summary of the text input provided.
+Text:
+{text}
+"""
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = prompt | self.chat_model | StrOutputParser()
+
+        summaries = {}
+        for cluster, text in texts.items():
+            token_count = self.num_tokens_from_string(text)
+
+            if token_count > self.token_limit:
+                # stop if text is too long
+                raise ValueError(
+                    f"Token limit exceeded for cluster {cluster} with {token_count} tokens. Unable to generate summary."
+                )
+
+            summary = chain.invoke({"text": text})
+            summaries[cluster] = summary
+        return summaries
+
+    def run(self):
+        # Main loop: load, embed, reduce, cluster, summarize until one cluster remains
+        print("Running TextClusterSummarizer...")
+        docs = self.load_and_split_documents()
+        texts = [doc.page_content for doc in docs]
+        all_summaries = texts
+
+        iteration = 1
+        # record initial state (no summaries)
+        self.iteration_summaries.append(
+            {"iteration": 0, "texts": texts, "summaries": []}
+        )
+
+        while True:
+            print(f"Iteration {iteration}")
+            embeddings = self.embed_texts(all_summaries)
+
+            # Determine neighbors for UMAP
+            n_neighbors = min(int((len(embeddings) - 1) ** 0.5), len(embeddings) - 1)
+            if n_neighbors < 2:
+                # if too few points, stop
+                print("Not enough data points for UMAP reduction. Stopping iterations.")
+                break
+
+            embeddings_reduced = self.reduce_dimensions(
+                embeddings, dim=2, n_neighbors=n_neighbors
+            )
+            labels, num_clusters = self.cluster_embeddings(
+                embeddings_reduced, threshold=0.5
+            )
+
+            if num_clusters == 1:
+                # one cluster left, done
+                print("Reduced to a single cluster. Stopping iterations.")
+                break
+
+            # pick the first label each point belongs to
+            simple_labels = [label[0] if len(label) > 0 else -1 for label in labels]
+            df = pd.DataFrame(
+                {
+                    "Text": all_summaries,
+                    "Embedding": list(embeddings_reduced),
+                    "Cluster": simple_labels,
+                }
+            )
+
+            clustered_texts = self.format_cluster_texts(df)
+            summaries = self.generate_summaries(clustered_texts)
+
+            # prepare for next iteration
+            all_summaries = list(summaries.values())
+            self.iteration_summaries.append(
+                {
+                    "iteration": iteration,
+                    "texts": all_summaries,
+                    "summaries": list(summaries.values()),
+                }
+            )
+            iteration += 1
+
+        # after loop, return the final summary and iteration data
+        final_summary = all_summaries[0] if all_summaries else ""
+        return {
+            "initial_texts": texts,
+            "iteration_summaries": self.iteration_summaries,
+            "final_summary": final_summary,
+        }
+
+# Example of running the summarizer when this script is executed directly
+if __name__ == "__main__":
+    summarizer = TextClusterSummarizer(token_limit=200, data_directory="data")
+    final_output = summarizer.run()
